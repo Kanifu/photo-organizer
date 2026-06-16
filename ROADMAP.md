@@ -6,7 +6,7 @@ Create a reliable local tool that turns scattered personal photos from local fol
 
 ## Phase 1 - Stabilize The Local App
 
-- Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior.
+- Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior. Started with core scan/date/cluster tests and web scan API tests.
 - Make duplicate detection safer by separating "exact duplicate", "likely duplicate", and "similar moment".
 - Add a persistent project/session file so users can pause and continue a selection.
 - Improve folder validation, error messages, and empty-state handling.
@@ -15,7 +15,7 @@ Create a reliable local tool that turns scattered personal photos from local fol
 
 ## Phase 2 - Multiple Local Sources
 
-- Allow users to add multiple local folders in one project.
+- Allow users to add multiple local folders in one project. Implemented for the current web UI, API, CLI, and core scan pipeline.
 - Track source folder per photo.
 - Detect duplicate files across folders.
 - Add include/exclude rules per source.
@@ -52,4 +52,3 @@ Create a reliable local tool that turns scattered personal photos from local fol
 - Keep cloud access optional and transparent.
 - Keep AI suggestions explainable and overridable.
 - Make the pipeline resumable before adding more automation.
-

@@ -23,9 +23,10 @@ from organize import (
     get_location_name_for_event,
     get_photo_date,
     get_resolution,
-    is_screenshot,
+    normalize_input_dirs,
     read_gps_from_exif,
-    SUPPORTED_EXTENSIONS,
+    scan_photos,
+    validate_source_dirs,
 )
 
 app = Flask(__name__)
@@ -35,6 +36,7 @@ app.secret_key = "photo-organizer-local"
 
 state: dict = {
     "input_dir": None,
+    "input_dirs": [],
     "output_dir": None,
     "gap_hours": DEFAULT_EVENT_GAP_HOURS,
     "use_locations": True,
@@ -191,26 +193,22 @@ def run_ai_scoring(paths: List[Path], api_key: str):
 
 # ── Background scan ───────────────────────────────────────────────────────────
 
-def do_scan(input_dir: Path, skip_screenshots: bool):
+def do_scan(input_dirs: List[Path], skip_screenshots: bool):
     try:
         state["scan_status"] = "running"
-        state["scan_progress"] = "Scanning folder…"
+        state["scan_progress"] = "Scanning folders…"
 
-        photos = [
-            p for p in input_dir.rglob("*")
-            if p.suffix.lower() in SUPPORTED_EXTENSIONS and p.is_file()
-        ]
-        if skip_screenshots:
-            photos = [p for p in photos if not is_screenshot(p)]
+        photos, skipped = scan_photos(input_dirs, skip_screenshots=skip_screenshots)
 
-        state["scan_progress"] = f"Found {len(photos)} photos. Computing hashes…"
+        skipped_msg = f" Skipped {skipped} screenshots." if skipped else ""
+        state["scan_progress"] = f"Found {len(photos)} photos.{skipped_msg} Computing hashes…"
 
         singletons, groups = find_duplicate_groups(photos)
 
         state["kept_photos"] = singletons
         state["dup_groups"] = groups
         state["scan_progress"] = (
-            f"Done. {len(photos)} photos scanned, "
+            f"Done. {len(photos)} photos scanned from {len(input_dirs)} source folder(s), "
             f"{len(groups)} duplicate groups found ({sum(len(g) for g in groups)} photos)."
         )
         state["scan_status"] = "done"
@@ -228,16 +226,18 @@ def index():
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
     data = request.json
-    input_dir = Path(data["input_dir"]).expanduser().resolve()
+    raw_input_dirs = data.get("input_dirs") or [data.get("input_dir")]
     output_dir = Path(data["output_dir"]).expanduser().resolve()
 
-    if not input_dir.exists():
-        return jsonify(error=f"Input folder not found: {input_dir}"), 400
-    if input_dir == output_dir:
-        return jsonify(error="Input and output must be different folders."), 400
+    try:
+        input_dirs = normalize_input_dirs(raw_input_dirs)
+        validate_source_dirs(input_dirs, output_dir)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
     state.update({
-        "input_dir": input_dir,
+        "input_dir": input_dirs[0],
+        "input_dirs": input_dirs,
         "output_dir": output_dir,
         "gap_hours": float(data.get("gap_hours", DEFAULT_EVENT_GAP_HOURS)),
         "use_locations": data.get("use_locations", True),
@@ -250,7 +250,7 @@ def api_scan():
 
     threading.Thread(
         target=do_scan,
-        args=(input_dir, data.get("skip_screenshots", True)),
+        args=(input_dirs, data.get("skip_screenshots", True)),
         daemon=True
     ).start()
     return jsonify(started=True)
@@ -388,8 +388,9 @@ header span{font-size:.82rem;opacity:.55}
 .card{background:#fff;border-radius:12px;padding:26px;margin-bottom:22px;box-shadow:0 1px 5px rgba(0,0,0,.07)}
 .card h2{font-size:.82rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#888;margin-bottom:16px}
 label{display:block;font-size:.88rem;color:#555;margin-bottom:4px}
-input[type=text],input[type=number],input[type=password]{width:100%;padding:9px 13px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:.93rem;margin-bottom:12px;outline:none;transition:border-color .15s}
-input:focus{border-color:#4f8ef7}
+input[type=text],input[type=number],input[type=password],textarea{width:100%;padding:9px 13px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:.93rem;margin-bottom:12px;outline:none;transition:border-color .15s;font-family:inherit}
+textarea{min-height:92px;resize:vertical;line-height:1.35}
+input:focus,textarea:focus{border-color:#4f8ef7}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .toggle{display:flex;align-items:center;gap:9px;margin-bottom:11px;font-size:.9rem;color:#444;cursor:pointer}
 .toggle input{width:16px;height:16px;cursor:pointer}
@@ -473,8 +474,8 @@ section.on{display:block}
       <h2>Folders</h2>
       <div class="row2">
         <div>
-          <label>Input folder (your photos)</label>
-          <input type="text" id="in-dir" placeholder="/Users/jordy/Pictures/fotoboeken">
+          <label>Input folders (one per line)</label>
+          <textarea id="in-dirs" placeholder="/Users/jordy/Pictures/fotoboeken&#10;/Users/jordy/Desktop/telefoon-fotos"></textarea>
         </div>
         <div>
           <label>Output folder (organized copy)</label>
@@ -573,9 +574,9 @@ function setStep(n){
 
 // ── Step 1: Scan ──────────────────────────────────────────────────────────────
 async function startScan(){
-  const inDir=document.getElementById('in-dir').value.trim();
+  const inputDirs=document.getElementById('in-dirs').value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
   const outDir=document.getElementById('out-dir').value.trim();
-  if(!inDir||!outDir){showAlert('Fill in both folders.','err');return;}
+  if(!inputDirs.length||!outDir){showAlert('Fill in source and output folders.','err');return;}
 
   document.getElementById('scan-btn').disabled=true;
   document.getElementById('scan-status').style.display='block';
@@ -583,7 +584,7 @@ async function startScan(){
 
   const r = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
-      input_dir:inDir, output_dir:outDir,
+      input_dirs:inputDirs, output_dir:outDir,
       gap_hours:parseFloat(document.getElementById('gap').value)||4,
       use_locations:document.getElementById('opt-loc').checked,
       skip_screenshots:document.getElementById('opt-ss').checked,

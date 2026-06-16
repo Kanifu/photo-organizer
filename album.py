@@ -40,6 +40,13 @@ def ask_folder(prompt: str, must_exist: bool = False) -> Path:
             return path
 
 
+def ask_input_folders() -> list[Path]:
+    folders = [ask_folder("Input folder (where your photos are)", must_exist=True)]
+    while ask_yes_no("Add another input folder?", default=False):
+        folders.append(ask_folder("Extra input folder", must_exist=True))
+    return folders
+
+
 def print_header():
     print()
     print("╔══════════════════════════════════════╗")
@@ -56,13 +63,13 @@ def wizard():
     print("into events by date and location, and copy them to an output folder.")
     print("Your originals are never moved or deleted.\n")
 
-    # Input folder
+    # Input folders
     print("── Step 1: Folders ─────────────────────────────────────────────")
-    input_dir = ask_folder("Input folder (where your photos are)", must_exist=True)
+    input_dirs = ask_input_folders()
     output_dir = ask_folder("Output folder (where to put the organized photos)")
 
-    if input_dir == output_dir:
-        print("Error: input and output must be different folders.")
+    if any(output_dir == input_dir or output_dir.is_relative_to(input_dir) for input_dir in input_dirs):
+        print("Error: output must be outside every input folder.")
         sys.exit(1)
 
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -98,7 +105,7 @@ def wizard():
 
     try:
         named_events = run(
-            input_dir=input_dir,
+            input_dir=input_dirs,
             output_dir=output_dir,
             gap_hours=gap_hours,
             dry_run=True,
@@ -123,7 +130,7 @@ def wizard():
     # Run for real
     print()
     run(
-        input_dir=input_dir,
+        input_dir=input_dirs,
         output_dir=output_dir,
         gap_hours=gap_hours,
         dry_run=False,

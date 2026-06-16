@@ -2,11 +2,11 @@
 
 Local photo organizer for preparing a clean set of photos for a printed photo album.
 
-The current prototype scans local folders, filters screenshots, groups similar photos, optionally scores photos with Claude, clusters selected photos into date-based events, and exports copies into event folders. Original files are not moved or deleted.
+The current prototype scans one or more local folders, filters screenshots, groups similar photos, optionally scores photos with Claude, clusters selected photos into date-based events, and exports copies into event folders. Original files are not moved or deleted.
 
 ## Current Features
 
-- Local folder scan for `.jpg`, `.jpeg`, `.png`, `.heic`, `.tiff`, and `.tif`.
+- Multi-folder local scan for `.jpg`, `.jpeg`, `.png`, `.heic`, `.tiff`, and `.tif`.
 - Screenshot filtering based on filename.
 - Perceptual-hash duplicate grouping.
 - Manual duplicate review in the web UI.
@@ -41,17 +41,25 @@ http://127.0.0.1:5050
 python album.py
 ```
 
+## Run Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
 ## Important Notes
 
 - The app is meant to run locally. Do not expose it publicly.
 - Originals are copied, not modified.
-- Duplicate detection should be treated carefully. A future version should make this safer before processing large personal libraries.
+- Duplicate detection should be treated carefully. The web UI asks for duplicate review, but the CLI can still auto-resolve likely duplicates.
+- The output folder must be outside every input folder. This avoids rescanning exported album copies in later runs.
 - HEIC support may require extra Pillow support depending on the local Python environment.
 - Claude scoring is optional and only runs when an API key is entered in the web UI.
+- Google Drive support is planned but not implemented yet. It should be added with explicit OAuth consent and local token handling.
 
 ## Product Direction
 
 The intended product goal is to help produce a high-quality curated photo set for an Albelli photo album. The first milestone should be a reliable local curation workflow. After that, the app can add Google Drive imports, multiple source folders, quality scoring, stronger duplicate handling, and eventually album-layout export or assisted composition.
 
 See [ROADMAP.md](ROADMAP.md) for the development plan.
-
