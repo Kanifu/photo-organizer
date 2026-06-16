@@ -1,0 +1,57 @@
+# Photo Organizer
+
+Local photo organizer for preparing a clean set of photos for a printed photo album.
+
+The current prototype scans local folders, filters screenshots, groups similar photos, optionally scores photos with Claude, clusters selected photos into date-based events, and exports copies into event folders. Original files are not moved or deleted.
+
+## Current Features
+
+- Local folder scan for `.jpg`, `.jpeg`, `.png`, `.heic`, `.tiff`, and `.tif`.
+- Screenshot filtering based on filename.
+- Perceptual-hash duplicate grouping.
+- Manual duplicate review in the web UI.
+- Optional Claude photo scoring with an API key.
+- Event grouping based on photo dates.
+- Optional GPS-based location names through OpenStreetMap Nominatim.
+- Export to a clean folder structure for manual review.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Run The Web UI
+
+```bash
+python app.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:5050
+```
+
+## Run The CLI Wizard
+
+```bash
+python album.py
+```
+
+## Important Notes
+
+- The app is meant to run locally. Do not expose it publicly.
+- Originals are copied, not modified.
+- Duplicate detection should be treated carefully. A future version should make this safer before processing large personal libraries.
+- HEIC support may require extra Pillow support depending on the local Python environment.
+- Claude scoring is optional and only runs when an API key is entered in the web UI.
+
+## Product Direction
+
+The intended product goal is to help produce a high-quality curated photo set for an Albelli photo album. The first milestone should be a reliable local curation workflow. After that, the app can add Google Drive imports, multiple source folders, quality scoring, stronger duplicate handling, and eventually album-layout export or assisted composition.
+
+See [ROADMAP.md](ROADMAP.md) for the development plan.
+
