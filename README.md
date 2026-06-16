@@ -7,6 +7,7 @@ The current prototype scans one or more local folders, filters screenshots, grou
 ## Current Features
 
 - Multi-folder local scan for `.jpg`, `.jpeg`, `.png`, `.heic`, `.tiff`, and `.tif`.
+- In-app folder browser for choosing input and output folders.
 - Screenshot filtering based on filename.
 - Perceptual-hash duplicate grouping.
 - Manual duplicate review in the web UI.
@@ -56,6 +57,7 @@ pytest
 - The output folder must be outside every input folder. This avoids rescanning exported album copies in later runs.
 - HEIC support may require extra Pillow support depending on the local Python environment.
 - Claude scoring is optional and only runs when an API key is entered in the web UI.
+- Only Anthropic/Claude API keys are supported today. Other AI providers need a provider abstraction because every vision API has its own SDK, model names, request format, response format, and pricing behavior.
 - Google Drive support is planned but not implemented yet. It should be added with explicit OAuth consent and local token handling.
 
 ## Product Direction

@@ -73,3 +73,26 @@ def test_scan_api_rejects_output_inside_input_dir(tmp_path):
 
     assert response.status_code == 400
     assert "outside every input folder" in response.get_json()["error"]
+
+
+def test_browse_api_lists_child_folders(tmp_path):
+    source = tmp_path / "photos"
+    child = source / "camera"
+    child.mkdir(parents=True)
+    (source / "notes.txt").write_text("not a folder")
+
+    client = photo_app.app.test_client()
+    response = client.get("/api/browse", query_string={"path": str(source)})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["path"] == str(source.resolve())
+    assert {"name": "camera", "path": str(child.resolve())} in data["dirs"]
+
+
+def test_browse_api_rejects_missing_folder(tmp_path):
+    client = photo_app.app.test_client()
+    response = client.get("/api/browse", query_string={"path": str(tmp_path / "missing")})
+
+    assert response.status_code == 400
+    assert "Folder not found" in response.get_json()["error"]

@@ -92,6 +92,49 @@ def photo_info(path: Path) -> dict:
     }
 
 
+def browse_dir_info(path: Path) -> dict:
+    home = Path.home().resolve()
+    resolved = path.expanduser().resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise ValueError(f"Folder not found: {resolved}")
+
+    dirs = []
+    try:
+        children = sorted(
+            [p for p in resolved.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            key=lambda p: p.name.lower(),
+        )
+    except PermissionError:
+        children = []
+
+    for child in children:
+        dirs.append({
+            "name": child.name,
+            "path": str(child),
+        })
+
+    parent = resolved.parent if resolved.parent != resolved else None
+    quick = [
+        {"label": "Home", "path": home},
+        {"label": "Pictures", "path": home / "Pictures"},
+        {"label": "Desktop", "path": home / "Desktop"},
+        {"label": "Documents", "path": home / "Documents"},
+        {"label": "Downloads", "path": home / "Downloads"},
+    ]
+
+    return {
+        "path": str(resolved),
+        "home": str(home),
+        "parent": str(parent) if parent else None,
+        "dirs": dirs,
+        "quick": [
+            {"label": item["label"], "path": str(item["path"])}
+            for item in quick
+            if item["path"].exists() and item["path"].is_dir()
+        ],
+    }
+
+
 # ── Duplicate grouping (union-find) ───────────────────────────────────────────
 
 def find_duplicate_groups(photos: List[Path], threshold: int = 8) -> Tuple[List[Path], List[List[Path]]]:
@@ -222,6 +265,14 @@ def do_scan(input_dirs: List[Path], skip_screenshots: bool):
 @app.route("/")
 def index():
     return render_template_string(HTML)
+
+@app.route("/api/browse")
+def api_browse():
+    raw_path = request.args.get("path") or str(Path.home())
+    try:
+        return jsonify(browse_dir_info(Path(raw_path)))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
@@ -452,6 +503,20 @@ section.on{display:block}
 .ev-hdr span{font-size:.82rem;color:#999;margin-left:auto}
 .ev-photos{padding:12px;display:flex;flex-wrap:wrap;gap:8px}
 .ev-photos img{width:80px;height:80px;object-fit:cover;border-radius:6px}
+/* Folder browser */
+.field-actions{display:flex;gap:8px;align-items:flex-start}
+.field-actions textarea,.field-actions input{flex:1}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;padding:22px;z-index:20}
+.modal.on{display:flex}
+.modal-box{background:#fff;border-radius:10px;width:min(720px,100%);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.22)}
+.modal-h{padding:14px 18px;border-bottom:1px solid #eee;display:flex;gap:10px;align-items:center}
+.modal-h strong{font-size:.98rem}
+.modal-h span{font-size:.78rem;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.modal-body{padding:14px 18px;overflow:auto}
+.quick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.dir-row{width:100%;text-align:left;background:#f7f8fa;color:#222;border:1px solid #eceef2;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+.dir-row:hover{background:#eef2ff;opacity:1}
+.modal-actions{padding:14px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -475,11 +540,17 @@ section.on{display:block}
       <div class="row2">
         <div>
           <label>Input folders (one per line)</label>
-          <textarea id="in-dirs" placeholder="/Users/jordy/Pictures/fotoboeken&#10;/Users/jordy/Desktop/telefoon-fotos"></textarea>
+          <div class="field-actions">
+            <textarea id="in-dirs" placeholder="/Users/jordy/Pictures/fotoboeken&#10;/Users/jordy/Desktop/telefoon-fotos"></textarea>
+            <button class="sm bp" type="button" onclick="openFolderBrowser('input')">Browse</button>
+          </div>
         </div>
         <div>
           <label>Output folder (organized copy)</label>
-          <input type="text" id="out-dir" placeholder="/Users/jordy/Desktop/album-output">
+          <div class="field-actions">
+            <input type="text" id="out-dir" placeholder="/Users/jordy/Desktop/album-output">
+            <button class="sm bp" type="button" onclick="openFolderBrowser('output')">Browse</button>
+          </div>
         </div>
       </div>
     </div>
@@ -552,11 +623,30 @@ section.on{display:block}
   </section>
 </div>
 
+<div class="modal" id="folder-modal">
+  <div class="modal-box">
+    <div class="modal-h">
+      <strong id="folder-title">Choose folder</strong>
+      <span id="folder-path"></span>
+    </div>
+    <div class="modal-body">
+      <div class="quick" id="folder-quick"></div>
+      <div id="folder-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="bz" type="button" onclick="closeFolderBrowser()">Cancel</button>
+      <button class="bg" type="button" onclick="chooseCurrentFolder()">Use this folder</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let allPhotos = [];
 let excluded = new Set();
 let dupGroups = [];      // [{photos:[...], decision:{kept:Set}}]
 let scanTimer;
+let folderMode = 'input';
+let currentFolderPath = '';
 
 function showAlert(msg, type='info'){
   const el = document.getElementById('alert');
@@ -570,6 +660,60 @@ function setStep(n){
     document.getElementById('s'+i).className='section'+(i===n?' on':'');
     document.getElementById('s'+i).style.display=i===n?'block':'none';
   });
+}
+
+// ── Folder browser ───────────────────────────────────────────────────────────
+async function openFolderBrowser(mode){
+  folderMode = mode;
+  document.getElementById('folder-title').textContent = mode === 'input' ? 'Choose input folder' : 'Choose output folder';
+  document.getElementById('folder-modal').classList.add('on');
+  const existing = mode === 'output' ? document.getElementById('out-dir').value.trim() : '';
+  await loadFolder(existing);
+}
+
+function closeFolderBrowser(){
+  document.getElementById('folder-modal').classList.remove('on');
+}
+
+async function loadFolder(path=''){
+  const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : '/api/browse';
+  const r = await fetch(url);
+  const d = await r.json();
+  if(!r.ok){showAlert(d.error,'err');return;}
+
+  currentFolderPath = d.path;
+  document.getElementById('folder-path').textContent = d.path;
+
+  const quick = document.getElementById('folder-quick');
+  quick.innerHTML = d.quick.map(q=>`<button class="sm bz" type="button" onclick="loadFolder('${escapeJs(q.path)}')">${escapeHtml(q.label)}</button>`).join('');
+
+  const list = document.getElementById('folder-list');
+  const up = d.parent ? `<button class="dir-row" type="button" onclick="loadFolder('${escapeJs(d.parent)}')"><span>..</span><span>Up</span></button>` : '';
+  const rows = d.dirs.map(dir=>`
+    <button class="dir-row" type="button" onclick="loadFolder('${escapeJs(dir.path)}')">
+      <span>${escapeHtml(dir.name)}</span><span>Open</span>
+    </button>`).join('');
+  list.innerHTML = up + (rows || '<p style="color:#999;font-size:.88rem">No subfolders found.</p>');
+}
+
+function chooseCurrentFolder(){
+  if(folderMode === 'output'){
+    document.getElementById('out-dir').value = currentFolderPath;
+  } else {
+    const input = document.getElementById('in-dirs');
+    const existing = input.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+    if(!existing.includes(currentFolderPath)) existing.push(currentFolderPath);
+    input.value = existing.join('\n');
+  }
+  closeFolderBrowser();
+}
+
+function escapeHtml(value){
+  return String(value).replace(/[&<>"']/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function escapeJs(value){
+  return String(value).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 }
 
 // ── Step 1: Scan ──────────────────────────────────────────────────────────────

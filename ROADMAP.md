@@ -9,9 +9,16 @@ Create a reliable local tool that turns scattered personal photos from local fol
 - Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior. Started with core scan/date/cluster tests and web scan API tests.
 - Make duplicate detection safer by separating "exact duplicate", "likely duplicate", and "similar moment".
 - Add a persistent project/session file so users can pause and continue a selection.
-- Improve folder validation, error messages, and empty-state handling.
+- Improve folder validation, error messages, and empty-state handling. Started with output-folder validation and an in-app folder browser.
 - Replace the single embedded HTML string with proper templates or a small frontend structure.
 - Add clear install and run documentation.
+
+## Phase 1b - AI Provider Options
+
+- Keep Anthropic/Claude as the first supported provider.
+- Add an AI provider abstraction before adding OpenAI, Google, or local vision models.
+- Store provider name, model name, and scoring prompt in project/session settings.
+- Keep AI scoring optional and make cost/rate-limit behavior visible before running a batch.
 
 ## Phase 2 - Multiple Local Sources
 
