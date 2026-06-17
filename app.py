@@ -7,6 +7,7 @@ Run: python3 app.py  →  opens http://localhost:5050
 import base64
 import io
 import shutil
+import subprocess
 import threading
 import webbrowser
 from collections import defaultdict
@@ -133,6 +134,28 @@ def browse_dir_info(path: Path) -> dict:
             if item["path"].exists() and item["path"].is_dir()
         ],
     }
+
+
+def choose_native_folder(title: str) -> Optional[Path]:
+    script = f'POSIX path of (choose folder with prompt "{title}")'
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("Native folder picker is unavailable on this system.") from e
+    if result.returncode != 0:
+        if "User canceled" in result.stderr:
+            return None
+        raise RuntimeError(result.stderr.strip() or "Native folder picker failed.")
+
+    raw_path = result.stdout.strip()
+    if raw_path != "/":
+        raw_path = raw_path.rstrip("/")
+    return Path(raw_path).expanduser().resolve()
 
 
 # ── Duplicate grouping (union-find) ───────────────────────────────────────────
@@ -273,6 +296,19 @@ def api_browse():
         return jsonify(browse_dir_info(Path(raw_path)))
     except ValueError as e:
         return jsonify(error=str(e)), 400
+
+@app.route("/api/native-folder", methods=["POST"])
+def api_native_folder():
+    data = request.json or {}
+    mode = data.get("mode", "input")
+    title = "Choose input folder" if mode == "input" else "Choose output folder"
+    try:
+        folder = choose_native_folder(title)
+    except RuntimeError as e:
+        return jsonify(error=str(e)), 500
+    if folder is None:
+        return jsonify(canceled=True)
+    return jsonify(path=str(folder), canceled=False)
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
@@ -542,14 +578,14 @@ section.on{display:block}
           <label>Input folders (one per line)</label>
           <div class="field-actions">
             <textarea id="in-dirs" placeholder="/Users/jordy/Pictures/fotoboeken&#10;/Users/jordy/Desktop/telefoon-fotos"></textarea>
-            <button class="sm bp" type="button" onclick="openFolderBrowser('input')">Browse</button>
+            <button class="sm bp" type="button" onclick="openNativeFolderPicker('input')">Browse</button>
           </div>
         </div>
         <div>
           <label>Output folder (organized copy)</label>
           <div class="field-actions">
             <input type="text" id="out-dir" placeholder="/Users/jordy/Desktop/album-output">
-            <button class="sm bp" type="button" onclick="openFolderBrowser('output')">Browse</button>
+            <button class="sm bp" type="button" onclick="openNativeFolderPicker('output')">Browse</button>
           </div>
         </div>
       </div>
@@ -663,6 +699,18 @@ function setStep(n){
 }
 
 // ── Folder browser ───────────────────────────────────────────────────────────
+async function openNativeFolderPicker(mode){
+  const r = await fetch('/api/native-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  const d = await r.json();
+  if(!r.ok){
+    showAlert(`${d.error} Opening fallback browser.`, 'warn');
+    await openFolderBrowser(mode);
+    return;
+  }
+  if(d.canceled) return;
+  applyChosenFolder(mode, d.path);
+}
+
 async function openFolderBrowser(mode){
   folderMode = mode;
   document.getElementById('folder-title').textContent = mode === 'input' ? 'Choose input folder' : 'Choose output folder';
@@ -697,15 +745,19 @@ async function loadFolder(path=''){
 }
 
 function chooseCurrentFolder(){
-  if(folderMode === 'output'){
-    document.getElementById('out-dir').value = currentFolderPath;
+  applyChosenFolder(folderMode, currentFolderPath);
+  closeFolderBrowser();
+}
+
+function applyChosenFolder(mode, path){
+  if(mode === 'output'){
+    document.getElementById('out-dir').value = path;
   } else {
     const input = document.getElementById('in-dirs');
     const existing = input.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
-    if(!existing.includes(currentFolderPath)) existing.push(currentFolderPath);
+    if(!existing.includes(path)) existing.push(path);
     input.value = existing.join('\n');
   }
-  closeFolderBrowser();
 }
 
 function escapeHtml(value){

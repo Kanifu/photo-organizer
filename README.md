@@ -7,7 +7,7 @@ The current prototype scans one or more local folders, filters screenshots, grou
 ## Current Features
 
 - Multi-folder local scan for `.jpg`, `.jpeg`, `.png`, `.heic`, `.tiff`, and `.tif`.
-- In-app folder browser for choosing input and output folders.
+- Native macOS folder picker for choosing input and output folders, with an in-app browser fallback.
 - Screenshot filtering based on filename.
 - Perceptual-hash duplicate grouping.
 - Manual duplicate review in the web UI.

@@ -96,3 +96,26 @@ def test_browse_api_rejects_missing_folder(tmp_path):
 
     assert response.status_code == 400
     assert "Folder not found" in response.get_json()["error"]
+
+
+def test_native_folder_api_returns_selected_path(monkeypatch, tmp_path):
+    selected = tmp_path / "photos"
+    selected.mkdir()
+
+    monkeypatch.setattr(photo_app, "choose_native_folder", lambda title: selected)
+
+    client = photo_app.app.test_client()
+    response = client.post("/api/native-folder", json={"mode": "input"})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"path": str(selected), "canceled": False}
+
+
+def test_native_folder_api_handles_cancel(monkeypatch):
+    monkeypatch.setattr(photo_app, "choose_native_folder", lambda title: None)
+
+    client = photo_app.app.test_client()
+    response = client.post("/api/native-folder", json={"mode": "output"})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"canceled": True}
