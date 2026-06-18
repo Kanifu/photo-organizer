@@ -138,6 +138,54 @@ def default_photo_labels_for_path(path: Path) -> dict:
     }
 
 
+def build_export_summary(labels: dict, deleted_events: set, renames: Optional[dict] = None) -> dict:
+    renames = renames or {}
+    valid_album_ids = [album["id"] for album in state["albums"]]
+    summary = {
+        "albums": [],
+        "unassigned": 0,
+        "shared": 0,
+        "excluded": 0,
+        "events": 0,
+        "total_selected": 0,
+        "deleted_events": len(deleted_events),
+        "output_dir": str(state["output_dir"]) if state.get("output_dir") else "",
+    }
+
+    album_stats = {
+        album["id"]: {"id": album["id"], "name": album["name"], "photos": 0, "events": 0}
+        for album in state["albums"]
+    }
+
+    for event_key, photos in sorted(state["events"].items()):
+        if event_key in deleted_events:
+            continue
+        summary["events"] += 1
+        event_album_counts = {album_id: 0 for album_id in valid_album_ids}
+        for photo in photos:
+            photo_id = path_id(photo)
+            label_data = labels.get(photo_id, {})
+            if label_data.get("excluded"):
+                summary["excluded"] += 1
+                continue
+            assigned = [album_id for album_id in label_data.get("albums", []) if album_id in event_album_counts]
+            if not assigned:
+                summary["unassigned"] += 1
+                continue
+            if len(assigned) > 1:
+                summary["shared"] += 1
+            summary["total_selected"] += 1
+            for album_id in assigned:
+                album_stats[album_id]["photos"] += 1
+                event_album_counts[album_id] += 1
+        for album_id, count in event_album_counts.items():
+            if count:
+                album_stats[album_id]["events"] += 1
+
+    summary["albums"] = list(album_stats.values())
+    return summary
+
+
 def ensure_photo_labels(paths: List[Path]) -> None:
     for path in paths:
         photo_id = path_id(path)
@@ -696,6 +744,15 @@ def api_export():
     return jsonify(total=total, events=exported_events, albums=exported_albums, output_dir=str(output_dir))
 
 
+@app.route("/api/export-summary", methods=["POST"])
+def api_export_summary():
+    data = request.json or {}
+    labels = data.get("photo_labels", state["photo_labels"])
+    deleted_events = set(data.get("deleted_events", []))
+    renames = data.get("renames", {})
+    return jsonify(build_export_summary(labels, deleted_events, renames))
+
+
 # ── HTML / JS ─────────────────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
@@ -784,6 +841,12 @@ section.on{display:block}
 .ev-hdr span{font-size:.82rem;color:#999;margin-left:auto}
 .ev-photos{padding:12px;display:flex;flex-wrap:wrap;gap:8px}
 .ev-photos img{width:80px;height:80px;object-fit:cover;border-radius:6px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px}
+.summary-box{border:1px solid #e4e8ef;border-radius:8px;padding:12px;background:#fafbfd}
+.summary-box strong{display:block;font-size:1.1rem;color:#18212f}
+.summary-box span{font-size:.78rem;color:#748091}
+.warn-list{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.warn-chip{padding:6px 10px;border-radius:999px;background:#fff5d8;color:#8a6200;font-size:.78rem;border:1px solid #f1dda0}
 /* Folder browser */
 .field-actions{display:flex;gap:8px;align-items:flex-start}
 .field-actions textarea,.field-actions input{flex:1}
@@ -919,6 +982,7 @@ section.on{display:block}
     <div class="card">
       <h2>Review events &amp; export</h2>
       <p style="font-size:.88rem;color:#777;margin-bottom:16px">Rename event folders if needed, then export.</p>
+      <div id="export-summary"></div>
       <div id="ev-list"></div>
       <br>
       <button class="bg" onclick="doExport()">Export to output folder →</button>
@@ -953,6 +1017,7 @@ let currentFolderPath = '';
 let albums = [];
 let photoLabels = {};
 let currentEvents = [];
+let exportSummary = null;
 let currentStep = 1;
 let maxUnlockedStep = 1;
 
@@ -1330,6 +1395,7 @@ async function goExport(){
   const d=await r.json();
   if(!r.ok){showAlert(d.error,'err');return;}
   renderEvents(d.events);
+  await refreshExportSummary();
   showAlert(`${d.total} photos ready in ${d.events.length} events.`,'ok');
 }
 
@@ -1371,6 +1437,7 @@ function toggleDeleteEvent(key){
     block.style.opacity='.3';
     block.querySelector('.br').textContent='↩ Restore';
   }
+  refreshExportSummary();
 }
 
 function assignEventToAlbum(eventKey, albumId){
@@ -1382,6 +1449,7 @@ function assignEventToAlbum(eventKey, albumId){
     photoLabels[photo.id].excluded = false;
   });
   persistPhotoLabels();
+  refreshExportSummary();
   showAlert(`Assigned ${event.photos.length} photos from ${eventKey} to one album.`, 'ok');
 }
 
@@ -1395,16 +1463,51 @@ function assignEventToAllAlbums(eventKey){
     photoLabels[photo.id].excluded = false;
   });
   persistPhotoLabels();
+  refreshExportSummary();
   showAlert(`Assigned ${event.photos.length} photos from ${eventKey} to all albums.`, 'ok');
 }
 
-async function doExport(){
-  showAlert('Exporting…','info');
+function currentRenames(){
   const renames={};
   document.querySelectorAll('.ev-rename').forEach(el=>{
     const orig=el.dataset.key;
     if(el.value.trim() && el.value.trim()!==orig) renames[orig]=el.value.trim();
   });
+  return renames;
+}
+
+async function refreshExportSummary(){
+  const r=await fetch('/api/export-summary',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({photo_labels:photoLabels,deleted_events:[...deletedEvents],renames:currentRenames()})});
+  const d=await r.json();
+  if(!r.ok){return;}
+  exportSummary = d;
+  renderExportSummary(d);
+}
+
+function renderExportSummary(summary){
+  const el = document.getElementById('export-summary');
+  if(!el) return;
+  const cards = [
+    {label:'Selected photos', value:summary.total_selected},
+    {label:'Events', value:summary.events},
+    {label:'Shared photos', value:summary.shared},
+    {label:'Unassigned', value:summary.unassigned},
+    {label:'Excluded', value:summary.excluded},
+    {label:'Skipped events', value:summary.deleted_events},
+  ].map(item=>`<div class="summary-box"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+  const albumCards = summary.albums.map(album=>`<div class="summary-box"><strong>${album.photos}</strong><span>${escapeHtml(album.name)} · ${album.events} events</span></div>`).join('');
+  const warnings = [];
+  if(summary.unassigned) warnings.push(`${summary.unassigned} photos are not assigned to any album`);
+  if(!summary.total_selected) warnings.push('No photos will be exported');
+  summary.albums.forEach(album=>{ if(!album.photos) warnings.push(`${album.name} has no photos`); });
+  const warningHtml = warnings.length ? `<div class="warn-list">${warnings.map(msg=>`<div class="warn-chip">${escapeHtml(msg)}</div>`).join('')}</div>` : '';
+  el.innerHTML = `${warningHtml}<div class="summary-grid">${cards}${albumCards}</div>`;
+}
+
+async function doExport(){
+  showAlert('Exporting…','info');
+  const renames=currentRenames();
   const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({renames,deleted_events:[...deletedEvents],photo_labels:photoLabels})});
   const d=await r.json();

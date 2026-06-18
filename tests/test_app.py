@@ -220,3 +220,44 @@ def test_export_creates_separate_album_folders(tmp_path):
     assert export_response.get_json()["albums"] == 2
     assert (output / "zoon-2026").exists()
     assert (output / "dochter-2026").exists()
+
+
+def test_export_summary_reports_unassigned_and_per_album_counts(tmp_path):
+    source = tmp_path / "photos"
+    output = tmp_path / "export"
+    make_image(source / "20260601_100000_a.jpg", 7)
+    make_image(source / "20260601_100500_b.jpg", 31)
+
+    client = photo_app.app.test_client()
+    client.post(
+        "/api/scan",
+        json={
+            "project_name": "Familie 2026",
+            "albums": [{"name": "Zoon 2026"}, {"name": "Dochter 2026"}],
+            "input_dirs": [str(source)],
+            "output_dir": str(output),
+            "gap_hours": 4,
+            "use_locations": False,
+            "skip_screenshots": True,
+            "api_key": "",
+        },
+    )
+    wait_for_scan(client)
+    client.post("/api/resolve-duplicates", json={"decisions": {}})
+    photos = client.get("/api/ai-progress").get_json()["photos"]
+    client.post("/api/events", json={"kept_ids": [photo["id"] for photo in photos]})
+
+    labels = {
+        photos[0]["id"]: {"excluded": False, "albums": ["zoon-2026"]},
+        photos[1]["id"]: {"excluded": False, "albums": []},
+    }
+    response = client.post(
+        "/api/export-summary",
+        json={"photo_labels": labels, "deleted_events": []},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["total_selected"] == 1
+    assert data["unassigned"] == 1
+    assert any(album["id"] == "zoon-2026" and album["photos"] == 1 for album in data["albums"])
