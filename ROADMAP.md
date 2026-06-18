@@ -8,7 +8,7 @@ Create a reliable local tool that turns scattered personal photos from local fol
 
 - Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior. Started with core scan/date/cluster tests and web scan API tests.
 - Make duplicate detection safer by separating "exact duplicate", "likely duplicate", and "similar moment".
-- Add a persistent project/session file so users can pause and continue a selection.
+- Add a persistent project/session file so users can pause and continue a selection. Implemented with `photo-organizer-project.json` in the output folder.
 - Improve folder validation, error messages, and empty-state handling. Started with output-folder validation and an in-app folder browser.
 - Replace the single embedded HTML string with proper templates or a small frontend structure.
 - Add clear install and run documentation.
@@ -39,6 +39,7 @@ Create a reliable local tool that turns scattered personal photos from local fol
 ## Phase 4 - Album Curation
 
 - Add target album settings: theme, date range, max pages, max photos, preferred density.
+- Support multiple album targets inside one project. Implemented as a first pass with per-photo album assignment and per-album export folders.
 - Rank photos by quality, uniqueness, faces/people, events, and user selections.
 - Create a balanced shortlist across events instead of only selecting the highest-scored photos.
 - Add manual review views for "must keep", "maybe", and "discard".

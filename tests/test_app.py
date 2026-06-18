@@ -41,6 +41,8 @@ def test_scan_api_accepts_multiple_input_dirs(tmp_path):
     response = client.post(
         "/api/scan",
         json={
+            "project_name": "Familie 2026",
+            "albums": [{"name": "Zoon 2026"}, {"name": "Dochter 2026"}],
             "input_dirs": [str(source_a), str(source_b)],
             "output_dir": str(output),
             "gap_hours": 4,
@@ -66,6 +68,8 @@ def test_scan_api_rejects_output_inside_input_dir(tmp_path):
     response = client.post(
         "/api/scan",
         json={
+            "project_name": "Familie 2026",
+            "albums": [{"name": "Zoon 2026"}],
             "input_dirs": [str(source)],
             "output_dir": str(output),
         },
@@ -119,3 +123,84 @@ def test_native_folder_api_handles_cancel(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json() == {"canceled": True}
+
+
+def test_project_save_and_load_roundtrip(tmp_path):
+    source = tmp_path / "photos"
+    source.mkdir()
+    output = tmp_path / "export"
+
+    client = photo_app.app.test_client()
+    save_response = client.post(
+        "/api/project",
+        json={
+            "project_name": "Familie 2026",
+            "albums": [{"name": "Zoon 2026"}, {"name": "Dochter 2026"}],
+            "input_dirs": [str(source)],
+            "output_dir": str(output),
+            "gap_hours": 6,
+            "use_locations": False,
+        },
+    )
+
+    assert save_response.status_code == 200
+    project_file = output / "photo-organizer-project.json"
+    assert project_file.exists()
+
+    load_response = client.get("/api/project", query_string={"output_dir": str(output)})
+    assert load_response.status_code == 200
+    data = load_response.get_json()
+    assert data["project_name"] == "Familie 2026"
+    assert [album["name"] for album in data["albums"]] == ["Zoon 2026", "Dochter 2026"]
+    assert data["input_dirs"] == [str(source.resolve())]
+
+
+def test_export_creates_separate_album_folders(tmp_path):
+    source = tmp_path / "photos"
+    output = tmp_path / "export"
+    photo_a = make_image(source / "20260601_100000_a.jpg", 7)
+    photo_b = make_image(source / "20260601_100500_b.jpg", 31)
+
+    client = photo_app.app.test_client()
+    scan_response = client.post(
+        "/api/scan",
+        json={
+            "project_name": "Familie 2026",
+            "albums": [{"name": "Zoon 2026"}, {"name": "Dochter 2026"}],
+            "input_dirs": [str(source)],
+            "output_dir": str(output),
+            "gap_hours": 4,
+            "use_locations": False,
+            "skip_screenshots": True,
+            "api_key": "",
+        },
+    )
+    assert scan_response.status_code == 200
+    wait_for_scan(client)
+
+    resolve_response = client.post("/api/resolve-duplicates", json={"decisions": {}})
+    assert resolve_response.status_code == 200
+
+    ai_progress = client.get("/api/ai-progress").get_json()
+    photos = ai_progress["photos"]
+    labels = {}
+    for photo in photos:
+        labels[photo["id"]] = {
+            "excluded": False,
+            "albums": ["zoon-2026"] if photo["name"] == photo_a.name else ["dochter-2026"],
+        }
+
+    events_response = client.post(
+        "/api/events",
+        json={"kept_ids": [photo["id"] for photo in photos]},
+    )
+    assert events_response.status_code == 200
+
+    export_response = client.post(
+        "/api/export",
+        json={"renames": {}, "deleted_events": [], "photo_labels": labels},
+    )
+    assert export_response.status_code == 200
+    assert export_response.get_json()["albums"] == 2
+    assert (output / "zoon-2026").exists()
+    assert (output / "dochter-2026").exists()

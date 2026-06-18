@@ -6,6 +6,7 @@ Run: python3 app.py  →  opens http://localhost:5050
 
 import base64
 import io
+import json
 import shutil
 import subprocess
 import threading
@@ -36,6 +37,9 @@ app.secret_key = "photo-organizer-local"
 # ── State ─────────────────────────────────────────────────────────────────────
 
 state: dict = {
+    "project_name": "",
+    "albums": [],
+    "project_file": None,
     "input_dir": None,
     "input_dirs": [],
     "output_dir": None,
@@ -49,6 +53,9 @@ state: dict = {
     "ai_scores": {},            # str(path) -> {score, reason}
     "ai_running": False,
     "events": {},               # event_key -> [Path]
+    "photo_labels": {},         # photo_id -> {excluded: bool, albums: [album_id]}
+    "event_renames": {},        # event_key -> folder name
+    "deleted_events": [],
 }
 
 
@@ -90,6 +97,103 @@ def photo_info(path: Path) -> dict:
         "ai_score": score_data["score"] if score_data else None,
         "ai_reason": score_data["reason"] if score_data else None,
         "thumb": thumb_b64(path),
+    }
+
+
+def slugify(value: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in value.strip())
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned.strip("-") or "album"
+
+
+def normalize_albums(raw_albums: List[dict]) -> List[dict]:
+    albums = []
+    used_ids = set()
+    for item in raw_albums:
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        album_id = slugify(item.get("id") or name)
+        suffix = 2
+        base_id = album_id
+        while album_id in used_ids:
+            album_id = f"{base_id}-{suffix}"
+            suffix += 1
+        albums.append({"id": album_id, "name": name})
+        used_ids.add(album_id)
+    return albums
+
+
+def project_file_for_output_dir(output_dir: Path) -> Path:
+    return output_dir / "photo-organizer-project.json"
+
+
+def default_photo_labels_for_path(path: Path) -> dict:
+    photo_id = path_id(path)
+    return {
+        "excluded": False,
+        "albums": [album["id"] for album in state["albums"]],
+        "photo_id": photo_id,
+    }
+
+
+def ensure_photo_labels(paths: List[Path]) -> None:
+    for path in paths:
+        photo_id = path_id(path)
+        existing = state["photo_labels"].get(photo_id)
+        if not existing:
+            state["photo_labels"][photo_id] = default_photo_labels_for_path(path)
+            continue
+        existing_albums = set(existing.get("albums", []))
+        for album in state["albums"]:
+            if album["id"] not in existing_albums:
+                existing.setdefault("albums", []).append(album["id"])
+        existing["albums"] = [album_id for album_id in existing.get("albums", []) if any(album["id"] == album_id for album in state["albums"])]
+
+
+def serialize_project_state() -> dict:
+    return {
+        "project_name": state["project_name"],
+        "albums": state["albums"],
+        "input_dirs": [str(path) for path in state["input_dirs"]],
+        "output_dir": str(state["output_dir"]) if state["output_dir"] else "",
+        "gap_hours": state["gap_hours"],
+        "use_locations": state["use_locations"],
+        "photo_labels": state["photo_labels"],
+        "event_renames": state["event_renames"],
+        "deleted_events": state["deleted_events"],
+    }
+
+
+def save_project_state() -> Optional[Path]:
+    output_dir = state.get("output_dir")
+    if not output_dir:
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    project_file = project_file_for_output_dir(output_dir)
+    project_file.write_text(json.dumps(serialize_project_state(), indent=2), encoding="utf-8")
+    state["project_file"] = project_file
+    return project_file
+
+
+def load_project_state(project_file: Path) -> dict:
+    data = json.loads(project_file.read_text(encoding="utf-8"))
+    output_dir = Path(data["output_dir"]).expanduser().resolve()
+    input_dirs = normalize_input_dirs(data.get("input_dirs", []))
+    validate_source_dirs(input_dirs, output_dir)
+    albums = normalize_albums(data.get("albums", []))
+    return {
+        "project_name": data.get("project_name", ""),
+        "albums": albums,
+        "input_dirs": input_dirs,
+        "output_dir": output_dir,
+        "gap_hours": float(data.get("gap_hours", DEFAULT_EVENT_GAP_HOURS)),
+        "use_locations": bool(data.get("use_locations", True)),
+        "photo_labels": data.get("photo_labels", {}),
+        "event_renames": data.get("event_renames", {}),
+        "deleted_events": data.get("deleted_events", []),
+        "project_file": project_file,
     }
 
 
@@ -273,11 +377,13 @@ def do_scan(input_dirs: List[Path], skip_screenshots: bool):
 
         state["kept_photos"] = singletons
         state["dup_groups"] = groups
+        ensure_photo_labels(singletons)
         state["scan_progress"] = (
             f"Done. {len(photos)} photos scanned from {len(input_dirs)} source folder(s), "
             f"{len(groups)} duplicate groups found ({sum(len(g) for g in groups)} photos)."
         )
         state["scan_status"] = "done"
+        save_project_state()
     except Exception as e:
         state["scan_status"] = "error"
         state["scan_progress"] = str(e)
@@ -310,11 +416,53 @@ def api_native_folder():
         return jsonify(canceled=True)
     return jsonify(path=str(folder), canceled=False)
 
-@app.route("/api/scan", methods=["POST"])
-def api_scan():
-    data = request.json
+
+@app.route("/api/project", methods=["GET"])
+def api_project_load():
+    raw_output_dir = request.args.get("output_dir", "").strip()
+    if not raw_output_dir:
+        return jsonify(error="Output folder is required."), 400
+    output_dir = Path(raw_output_dir).expanduser().resolve()
+    project_file = project_file_for_output_dir(output_dir)
+    if not project_file.exists():
+        return jsonify(error=f"No project file found in {output_dir}"), 404
+
+    try:
+        loaded = load_project_state(project_file)
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
+        return jsonify(error=str(e)), 400
+
+    state.update({
+        "project_name": loaded["project_name"],
+        "albums": loaded["albums"],
+        "input_dir": loaded["input_dirs"][0] if loaded["input_dirs"] else None,
+        "input_dirs": loaded["input_dirs"],
+        "output_dir": loaded["output_dir"],
+        "gap_hours": loaded["gap_hours"],
+        "use_locations": loaded["use_locations"],
+        "photo_labels": loaded["photo_labels"],
+        "event_renames": loaded["event_renames"],
+        "deleted_events": loaded["deleted_events"],
+        "project_file": loaded["project_file"],
+    })
+    return jsonify({
+        "project_name": state["project_name"],
+        "albums": state["albums"],
+        "input_dirs": [str(path) for path in state["input_dirs"]],
+        "output_dir": str(state["output_dir"]),
+        "gap_hours": state["gap_hours"],
+        "use_locations": state["use_locations"],
+        "project_file": str(state["project_file"]),
+    })
+
+
+@app.route("/api/project", methods=["POST"])
+def api_project_save():
+    data = request.json or {}
     raw_input_dirs = data.get("input_dirs") or [data.get("input_dir")]
     output_dir = Path(data["output_dir"]).expanduser().resolve()
+    albums = normalize_albums(data.get("albums", []))
+    project_name = str(data.get("project_name", "")).strip()
 
     try:
         input_dirs = normalize_input_dirs(raw_input_dirs)
@@ -322,7 +470,46 @@ def api_scan():
     except ValueError as e:
         return jsonify(error=str(e)), 400
 
+    if not project_name:
+        return jsonify(error="Project name is required."), 400
+    if not albums:
+        return jsonify(error="Add at least one album."), 400
+
     state.update({
+        "project_name": project_name,
+        "albums": albums,
+        "input_dir": input_dirs[0],
+        "input_dirs": input_dirs,
+        "output_dir": output_dir,
+        "gap_hours": float(data.get("gap_hours", DEFAULT_EVENT_GAP_HOURS)),
+        "use_locations": data.get("use_locations", True),
+    })
+    ensure_photo_labels(state.get("kept_photos", []))
+    project_file = save_project_state()
+    return jsonify(ok=True, project_file=str(project_file))
+
+@app.route("/api/scan", methods=["POST"])
+def api_scan():
+    data = request.json
+    raw_input_dirs = data.get("input_dirs") or [data.get("input_dir")]
+    output_dir = Path(data["output_dir"]).expanduser().resolve()
+    albums = normalize_albums(data.get("albums", []))
+    project_name = str(data.get("project_name", "")).strip()
+
+    try:
+        input_dirs = normalize_input_dirs(raw_input_dirs)
+        validate_source_dirs(input_dirs, output_dir)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    if not project_name:
+        return jsonify(error="Project name is required."), 400
+    if not albums:
+        return jsonify(error="Add at least one album."), 400
+
+    state.update({
+        "project_name": project_name,
+        "albums": albums,
+        "project_file": project_file_for_output_dir(output_dir),
         "input_dir": input_dirs[0],
         "input_dirs": input_dirs,
         "output_dir": output_dir,
@@ -332,7 +519,10 @@ def api_scan():
         "ai_scores": {},
         "dup_groups": [],
         "kept_photos": [],
+        "photo_labels": {},
         "scan_status": "idle",
+        "event_renames": {},
+        "deleted_events": [],
     })
 
     threading.Thread(
@@ -340,7 +530,7 @@ def api_scan():
         args=(input_dirs, data.get("skip_screenshots", True)),
         daemon=True
     ).start()
-    return jsonify(started=True)
+    return jsonify(started=True, project_file=str(state["project_file"]))
 
 @app.route("/api/scan-progress")
 def api_scan_progress():
@@ -375,6 +565,8 @@ def api_resolve_duplicates():
             # else: discard
 
     state["kept_photos"] = kept
+    ensure_photo_labels(kept)
+    save_project_state()
     return jsonify(ok=True, total=len(kept))
 
 @app.route("/api/ai-scores")
@@ -397,12 +589,34 @@ def api_run_ai():
 def api_ai_progress():
     photos = state["kept_photos"]
     scored = sum(1 for p in photos if str(p) in state["ai_scores"])
+    ensure_photo_labels(photos)
     return jsonify(
         done=scored,
         total=len(photos),
         finished=not state["ai_running"] and scored >= len(photos),
-        photos=[photo_info(p) for p in photos],
+        albums=state["albums"],
+        photos=[
+            {
+                **photo_info(p),
+                "labels": state["photo_labels"].get(path_id(p), default_photo_labels_for_path(p)),
+            }
+            for p in photos
+        ],
     )
+
+
+@app.route("/api/photo-labels", methods=["POST"])
+def api_photo_labels():
+    labels = request.json.get("photo_labels", {})
+    valid_albums = {album["id"] for album in state["albums"]}
+    for photo_id, label_data in labels.items():
+        state["photo_labels"][photo_id] = {
+            "excluded": bool(label_data.get("excluded", False)),
+            "albums": [album_id for album_id in label_data.get("albums", []) if album_id in valid_albums],
+            "photo_id": photo_id,
+        }
+    save_project_state()
+    return jsonify(ok=True, total=len(state["photo_labels"]))
 
 @app.route("/api/events", methods=["POST"])
 def api_events():
@@ -430,6 +644,7 @@ def api_events():
         named_events[key] = event_photos
 
     state["events"] = named_events
+    save_project_state()
     events_data = [
         {"key": k, "photos": [photo_info(p) for p in v]}
         for k, v in sorted(named_events.items())
@@ -439,23 +654,46 @@ def api_events():
 @app.route("/api/export", methods=["POST"])
 def api_export():
     data = request.json
-    kept_ids = set(data.get("kept_ids", []))
     renames: dict = data.get("renames", {})
     deleted: set = set(data.get("deleted_events", []))
     output_dir: Path = state["output_dir"]
+    labels = request.json.get("photo_labels", state["photo_labels"])
+    state["event_renames"] = renames
+    state["deleted_events"] = list(deleted)
     total = 0
     exported_events = 0
-    for key, photos in sorted(state["events"].items()):
-        if key in deleted:
-            continue
-        folder_name = renames.get(key, key)
-        event_dir = output_dir / folder_name
-        event_dir.mkdir(parents=True, exist_ok=True)
-        for i, src in enumerate([p for p in photos if path_id(p) in kept_ids], 1):
-            shutil.copy2(src, event_dir / f"{i:03d}_{src.name}")
-            total += 1
-        exported_events += 1
-    return jsonify(total=total, events=exported_events, output_dir=str(output_dir))
+    exported_albums = 0
+
+    for album in state["albums"]:
+        album_dir = output_dir / slugify(album["name"])
+        album_total = 0
+        for key, photos in sorted(state["events"].items()):
+            if key in deleted:
+                continue
+            folder_name = renames.get(key, key)
+            selected = []
+            for photo in photos:
+                photo_id = path_id(photo)
+                label_data = labels.get(photo_id, {})
+                if label_data.get("excluded"):
+                    continue
+                if album["id"] not in label_data.get("albums", []):
+                    continue
+                selected.append(photo)
+            if not selected:
+                continue
+            event_dir = album_dir / folder_name
+            event_dir.mkdir(parents=True, exist_ok=True)
+            for i, src in enumerate(selected, 1):
+                shutil.copy2(src, event_dir / f"{i:03d}_{src.name}")
+                total += 1
+                album_total += 1
+            exported_events += 1
+        if album_total:
+            exported_albums += 1
+
+    save_project_state()
+    return jsonify(total=total, events=exported_events, albums=exported_albums, output_dir=str(output_dir))
 
 
 # ── HTML / JS ─────────────────────────────────────────────────────────────────
@@ -479,6 +717,7 @@ input[type=text],input[type=number],input[type=password],textarea{width:100%;pad
 textarea{min-height:92px;resize:vertical;line-height:1.35}
 input:focus,textarea:focus{border-color:#4f8ef7}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .toggle{display:flex;align-items:center;gap:9px;margin-bottom:11px;font-size:.9rem;color:#444;cursor:pointer}
 .toggle input{width:16px;height:16px;cursor:pointer}
 button{padding:10px 20px;border:none;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;transition:opacity .15s}
@@ -525,6 +764,10 @@ section.on{display:block}
 .pc img{width:100%;aspect-ratio:1;object-fit:cover;display:block}
 .pc .pmeta{padding:7px 9px;font-size:.75rem;color:#666}
 .pc .pmeta strong{display:block;color:#222;font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chip{padding:4px 8px;border-radius:999px;border:1px solid #d6dbe7;background:#fff;color:#516074;font-size:.72rem;cursor:pointer}
+.chip.on{background:#1f7a5a;color:#fff;border-color:#1f7a5a}
+.muted{font-size:.8rem;color:#8a8f99}
 .ai-badge{position:absolute;top:7px;right:7px;border-radius:20px;padding:2px 8px;font-size:.75rem;font-weight:700;color:#fff}
 .ai-h{background:#2ecc71}
 .ai-m{background:#f39c12}
@@ -571,6 +814,27 @@ section.on{display:block}
 
   <!-- 1. Setup -->
   <section class="on" id="s1">
+    <div class="card">
+      <h2>Project</h2>
+      <div class="row3">
+        <div>
+          <label>Project name</label>
+          <input type="text" id="project-name" placeholder="Familie 2026">
+        </div>
+        <div>
+          <label>Albums (one per line)</label>
+          <textarea id="albums" placeholder="Zoon 2026&#10;Dochter 2026"></textarea>
+        </div>
+        <div>
+          <label>Project file</label>
+          <div class="muted" id="project-file">No project saved yet.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="sm bz" type="button" onclick="loadProject()">Load project</button>
+            <button class="sm bp" type="button" onclick="saveProject()">Save project</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="card">
       <h2>Folders</h2>
       <div class="row2">
@@ -683,11 +947,21 @@ let dupGroups = [];      // [{photos:[...], decision:{kept:Set}}]
 let scanTimer;
 let folderMode = 'input';
 let currentFolderPath = '';
+let albums = [];
+let photoLabels = {};
 
 function showAlert(msg, type='info'){
   const el = document.getElementById('alert');
   el.textContent = msg; el.style.display='block';
   el.className = 'alert alert-'+type;
+}
+
+function albumDefinitionsFromInput(){
+  return document.getElementById('albums').value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean).map(name=>({name}));
+}
+
+function syncProjectFileLabel(value){
+  document.getElementById('project-file').textContent = value || 'No project saved yet.';
 }
 
 function setStep(n){
@@ -770,9 +1044,11 @@ function escapeJs(value){
 
 // ── Step 1: Scan ──────────────────────────────────────────────────────────────
 async function startScan(){
+  const projectName=document.getElementById('project-name').value.trim();
+  const albumDefs=albumDefinitionsFromInput();
   const inputDirs=document.getElementById('in-dirs').value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
   const outDir=document.getElementById('out-dir').value.trim();
-  if(!inputDirs.length||!outDir){showAlert('Fill in source and output folders.','err');return;}
+  if(!projectName||!albumDefs.length||!inputDirs.length||!outDir){showAlert('Fill in project, albums, source folders, and output folder.','err');return;}
 
   document.getElementById('scan-btn').disabled=true;
   document.getElementById('scan-status').style.display='block';
@@ -780,6 +1056,8 @@ async function startScan(){
 
   const r = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
+      project_name:projectName,
+      albums:albumDefs,
       input_dirs:inputDirs, output_dir:outDir,
       gap_hours:parseFloat(document.getElementById('gap').value)||4,
       use_locations:document.getElementById('opt-loc').checked,
@@ -788,6 +1066,8 @@ async function startScan(){
     })
   });
   if(!r.ok){showAlert((await r.json()).error,'err');document.getElementById('scan-btn').disabled=false;return;}
+  const payload = await r.json();
+  syncProjectFileLabel(payload.project_file || '');
   scanTimer = setInterval(pollScan, 900);
 }
 
@@ -894,7 +1174,9 @@ async function loadAI(){
   } else {
     showAlert('No API key set — photos shown without AI scores. Manually exclude what you don\'t want.','warn');
     const prog=await (await fetch('/api/ai-progress')).json();
+    albums = prog.albums || [];
     allPhotos=prog.photos;
+    allPhotos.forEach(p=>{photoLabels[p.id]=p.labels;});
     document.getElementById('ai-tot').textContent=allPhotos.length;
     renderAIGrid();
   }
@@ -906,7 +1188,9 @@ async function pollAI(){
   document.getElementById('ai-n').textContent=d.done;
   document.getElementById('ai-tot').textContent=d.total;
   document.getElementById('ai-bar').style.width=(d.total?d.done/d.total*100:0)+'%';
+  albums = d.albums || [];
   allPhotos=d.photos;
+  allPhotos.forEach(p=>{photoLabels[p.id]=p.labels;});
   renderAIGrid();
   if(!d.finished) aiTimer=setTimeout(pollAI,1600);
   else{
@@ -919,39 +1203,59 @@ function renderAIGrid(){
   const grid=document.getElementById('ai-grid');
   grid.innerHTML='';
   allPhotos.forEach(p=>{
-    const ex=excluded.has(p.id);
+    const labels = photoLabels[p.id] || {excluded:false, albums: albums.map(a=>a.id)};
+    const ex=Boolean(labels.excluded) || excluded.has(p.id);
     const s=p.ai_score;
     const cls=s==null?'':s>=7?'ai-h':s>=4?'ai-m':'ai-l';
     const badge=s!=null?`<div class="ai-badge ${cls}">${s}/10</div>`:'';
     const reason=p.ai_reason?`<div style="font-size:.72rem;color:#999;margin-top:2px">${p.ai_reason}</div>`:'';
+    const chips = albums.map(album=>`<button class="chip ${labels.albums.includes(album.id)?'on':''}" type="button" onclick="toggleAlbum('${p.id}','${album.id}')">${escapeHtml(album.name)}</button>`).join('');
     grid.innerHTML+=`
       <div class="pc ${ex?'ex':''}" id="pc-${p.id}">
         <img src="data:image/jpeg;base64,${p.thumb}" alt="${p.name}">
         ${badge}
         <button class="xbtn" onclick="toggleEx('${p.id}')" title="${ex?'Include':'Exclude'}">${ex?'↩':'✕'}</button>
-        <div class="pmeta"><strong>${p.name}</strong><div>${p.date}</div>${reason}</div>
+        <div class="pmeta"><strong>${p.name}</strong><div>${p.date}</div>${reason}<div class="chip-row">${chips}</div></div>
       </div>`;
   });
 }
 
 function toggleEx(id){
-  excluded.has(id)?excluded.delete(id):excluded.add(id);
+  if(!photoLabels[id]) photoLabels[id] = {excluded:false, albums: albums.map(a=>a.id)};
+  photoLabels[id].excluded = !photoLabels[id].excluded;
+  photoLabels[id].albums = photoLabels[id].albums || [];
   const card=document.getElementById('pc-'+id);
   card.classList.toggle('ex');
-  card.querySelector('.xbtn').textContent=excluded.has(id)?'↩':'✕';
+  card.querySelector('.xbtn').textContent=photoLabels[id].excluded?'↩':'✕';
+  persistPhotoLabels();
+}
+
+function toggleAlbum(photoId, albumId){
+  if(!photoLabels[photoId]) photoLabels[photoId] = {excluded:false, albums: albums.map(a=>a.id)};
+  const current = new Set(photoLabels[photoId].albums || []);
+  if(current.has(albumId)) current.delete(albumId);
+  else current.add(albumId);
+  photoLabels[photoId].albums = [...current];
+  renderAIGrid();
+  persistPhotoLabels();
+}
+
+async function persistPhotoLabels(){
+  await fetch('/api/photo-labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({photo_labels:photoLabels})});
 }
 
 function autoExclude(threshold){
-  if(threshold===0){excluded.clear();}
-  else{allPhotos.forEach(p=>{if(p.ai_score!=null&&p.ai_score<threshold)excluded.add(p.id);});}
+  if(threshold===0){allPhotos.forEach(p=>{if(photoLabels[p.id]) photoLabels[p.id].excluded=false;});}
+  else{allPhotos.forEach(p=>{if(p.ai_score!=null&&p.ai_score<threshold){if(!photoLabels[p.id]) photoLabels[p.id]={excluded:false, albums: albums.map(a=>a.id)}; photoLabels[p.id].excluded=true;}});}
   renderAIGrid();
+  persistPhotoLabels();
 }
 
 // ── Step 4: Export ────────────────────────────────────────────────────────────
 async function goExport(){
   setStep(4);
   showAlert('Grouping photos into events…','info');
-  const keptIds=allPhotos.filter(p=>!excluded.has(p.id)).map(p=>p.id);
+  const keptIds=allPhotos.filter(p=>!(photoLabels[p.id]?.excluded)).map(p=>p.id);
   const r=await fetch('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({kept_ids:keptIds})});
   const d=await r.json();
@@ -1003,12 +1307,43 @@ async function doExport(){
     const orig=el.dataset.key;
     if(el.value.trim() && el.value.trim()!==orig) renames[orig]=el.value.trim();
   });
-  const keptIds=allPhotos.filter(p=>!excluded.has(p.id)).map(p=>p.id);
   const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({kept_ids:keptIds,renames,deleted_events:[...deletedEvents]})});
+    body:JSON.stringify({renames,deleted_events:[...deletedEvents],photo_labels:photoLabels})});
   const d=await r.json();
   if(!r.ok){showAlert(d.error,'err');return;}
-  showAlert(`Done! Copied ${d.total} photos into ${d.events} event folders → ${d.output_dir}`,'ok');
+  showAlert(`Done! Copied ${d.total} photos into ${d.events} event folders across ${d.albums} album exports → ${d.output_dir}`,'ok');
+}
+
+async function saveProject(){
+  const payload = {
+    project_name: document.getElementById('project-name').value.trim(),
+    albums: albumDefinitionsFromInput(),
+    input_dirs: document.getElementById('in-dirs').value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),
+    output_dir: document.getElementById('out-dir').value.trim(),
+    gap_hours: parseFloat(document.getElementById('gap').value)||4,
+    use_locations: document.getElementById('opt-loc').checked
+  };
+  const r = await fetch('/api/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const d = await r.json();
+  if(!r.ok){showAlert(d.error,'err');return;}
+  syncProjectFileLabel(d.project_file);
+  showAlert('Project saved.','ok');
+}
+
+async function loadProject(){
+  const outputDir = document.getElementById('out-dir').value.trim();
+  if(!outputDir){showAlert('Choose an output folder first.','err');return;}
+  const r = await fetch(`/api/project?output_dir=${encodeURIComponent(outputDir)}`);
+  const d = await r.json();
+  if(!r.ok){showAlert(d.error,'err');return;}
+  document.getElementById('project-name').value = d.project_name;
+  document.getElementById('albums').value = d.albums.map(album=>album.name).join('\n');
+  document.getElementById('in-dirs').value = d.input_dirs.join('\n');
+  document.getElementById('out-dir').value = d.output_dir;
+  document.getElementById('gap').value = d.gap_hours;
+  document.getElementById('opt-loc').checked = d.use_locations;
+  syncProjectFileLabel(d.project_file);
+  showAlert('Project loaded. Run a scan to restore the photo list.','ok');
 }
 
 setStep(1);
