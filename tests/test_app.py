@@ -30,6 +30,18 @@ def wait_for_scan(client):
     raise AssertionError("scan did not finish")
 
 
+def test_index_contains_project_and_batch_assignment_ui():
+    client = photo_app.app.test_client()
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'id="project-name"' in html
+    assert 'id="albums"' in html
+    assert 'id="album-batch-actions"' in html
+    assert "assignEventToAlbum" in html
+
+
 def test_scan_api_accepts_multiple_input_dirs(tmp_path):
     source_a = tmp_path / "camera"
     source_b = tmp_path / "phone"

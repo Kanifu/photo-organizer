@@ -905,6 +905,7 @@ section.on{display:block}
         <button class="sm bz" onclick="autoExclude(4)">Auto-exclude score &lt; 4</button>
         <button class="sm bz" onclick="autoExclude(0)">Reset all exclusions</button>
       </div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap" id="album-batch-actions"></div>
       <div class="photo-grid" id="ai-grid"></div>
       <br>
       <button class="bg" onclick="goExport()">Continue to review →</button>
@@ -949,6 +950,7 @@ let folderMode = 'input';
 let currentFolderPath = '';
 let albums = [];
 let photoLabels = {};
+let currentEvents = [];
 
 function showAlert(msg, type='info'){
   const el = document.getElementById('alert');
@@ -1202,6 +1204,7 @@ async function pollAI(){
 function renderAIGrid(){
   const grid=document.getElementById('ai-grid');
   grid.innerHTML='';
+  renderAlbumBatchActions();
   allPhotos.forEach(p=>{
     const labels = photoLabels[p.id] || {excluded:false, albums: albums.map(a=>a.id)};
     const ex=Boolean(labels.excluded) || excluded.has(p.id);
@@ -1220,6 +1223,14 @@ function renderAIGrid(){
   });
 }
 
+function renderAlbumBatchActions(){
+  const wrap = document.getElementById('album-batch-actions');
+  if(!wrap) return;
+  const buttons = albums.map(album=>`<button class="sm bp" type="button" onclick="applyAlbumPresetToVisible('${album.id}')">${escapeHtml(album.name)} only</button>`).join('');
+  const allAlbums = albums.length ? `<button class="sm bz" type="button" onclick="applyAllAlbumsToVisible()">All albums</button>` : '';
+  wrap.innerHTML = buttons + allAlbums;
+}
+
 function toggleEx(id){
   if(!photoLabels[id]) photoLabels[id] = {excluded:false, albums: albums.map(a=>a.id)};
   photoLabels[id].excluded = !photoLabels[id].excluded;
@@ -1236,6 +1247,27 @@ function toggleAlbum(photoId, albumId){
   if(current.has(albumId)) current.delete(albumId);
   else current.add(albumId);
   photoLabels[photoId].albums = [...current];
+  renderAIGrid();
+  persistPhotoLabels();
+}
+
+function applyAlbumPresetToVisible(albumId){
+  allPhotos.forEach(photo=>{
+    if(!photoLabels[photo.id]) photoLabels[photo.id] = {excluded:false, albums: albums.map(a=>a.id)};
+    photoLabels[photo.id].albums = [albumId];
+    photoLabels[photo.id].excluded = false;
+  });
+  renderAIGrid();
+  persistPhotoLabels();
+}
+
+function applyAllAlbumsToVisible(){
+  const allAlbumIds = albums.map(album=>album.id);
+  allPhotos.forEach(photo=>{
+    if(!photoLabels[photo.id]) photoLabels[photo.id] = {excluded:false, albums: allAlbumIds};
+    photoLabels[photo.id].albums = [...allAlbumIds];
+    photoLabels[photo.id].excluded = false;
+  });
   renderAIGrid();
   persistPhotoLabels();
 }
@@ -1267,12 +1299,15 @@ async function goExport(){
 let deletedEvents = new Set();
 
 function renderEvents(events){
+  currentEvents = events;
   const list=document.getElementById('ev-list');
   list.innerHTML='';
   events.forEach(ev=>{
     const del=deletedEvents.has(ev.key);
     const thumbs=ev.photos.slice(0,10).map(p=>`<img src="data:image/jpeg;base64,${p.thumb}" title="${p.name}">`).join('');
     const more=ev.photos.length>10?`<span style="align-self:center;color:#bbb;font-size:.8rem">+${ev.photos.length-10}</span>`:'';
+    const assignButtons = albums.map(album=>`<button class="sm bz" type="button" onclick="assignEventToAlbum('${ev.key}','${album.id}')">${escapeHtml(album.name)} only</button>`).join('');
+    const sharedButton = albums.length > 1 ? `<button class="sm bp" type="button" onclick="assignEventToAllAlbums('${ev.key}')">All albums</button>` : '';
     list.innerHTML+=`
       <div class="ev-block" id="evb-${btoa(ev.key)}" style="${del?'opacity:.3;pointer-events:none':''}">
         <div class="ev-hdr">
@@ -1280,6 +1315,7 @@ function renderEvents(events){
           <span>${ev.photos.length} photos</span>
           <button class="sm br" onclick="toggleDeleteEvent('${ev.key}')" style="pointer-events:auto">${del?'↩ Restore':'✕ Skip'}</button>
         </div>
+        <div style="padding:10px 12px 0;display:flex;gap:8px;flex-wrap:wrap">${assignButtons}${sharedButton}</div>
         <div class="ev-photos">${thumbs}${more}</div>
       </div>`;
   });
@@ -1298,6 +1334,31 @@ function toggleDeleteEvent(key){
     block.style.opacity='.3';
     block.querySelector('.br').textContent='↩ Restore';
   }
+}
+
+function assignEventToAlbum(eventKey, albumId){
+  const event = currentEvents.find(item => item.key === eventKey);
+  if(!event) return;
+  event.photos.forEach(photo=>{
+    if(!photoLabels[photo.id]) photoLabels[photo.id] = {excluded:false, albums: albums.map(a=>a.id)};
+    photoLabels[photo.id].albums = [albumId];
+    photoLabels[photo.id].excluded = false;
+  });
+  persistPhotoLabels();
+  showAlert(`Assigned ${event.photos.length} photos from ${eventKey} to one album.`, 'ok');
+}
+
+function assignEventToAllAlbums(eventKey){
+  const event = currentEvents.find(item => item.key === eventKey);
+  if(!event) return;
+  const allAlbumIds = albums.map(album=>album.id);
+  event.photos.forEach(photo=>{
+    if(!photoLabels[photo.id]) photoLabels[photo.id] = {excluded:false, albums: allAlbumIds};
+    photoLabels[photo.id].albums = [...allAlbumIds];
+    photoLabels[photo.id].excluded = false;
+  });
+  persistPhotoLabels();
+  showAlert(`Assigned ${event.photos.length} photos from ${eventKey} to all albums.`, 'ok');
 }
 
 async function doExport(){
