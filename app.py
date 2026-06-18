@@ -739,6 +739,7 @@ button:disabled{opacity:.35;cursor:not-allowed}
 /* Steps */
 .steps{display:flex;gap:7px;margin-bottom:22px;flex-wrap:wrap}
 .step{padding:6px 16px;border-radius:20px;font-size:.82rem;background:#e8eaef;color:#999;font-weight:600}
+.step.nav{cursor:pointer}
 .step.on{background:#4f8ef7;color:#fff}
 .step.ok{background:#2ecc71;color:#fff}
 section{display:none}
@@ -805,10 +806,10 @@ section.on{display:block}
 </header>
 <div class="wrap">
   <div class="steps">
-    <div class="step on" id="st1">1. Setup</div>
-    <div class="step" id="st2">2. Duplicates</div>
-    <div class="step" id="st3">3. AI Filter</div>
-    <div class="step" id="st4">4. Export</div>
+    <div class="step on nav" id="st1" onclick="goToStep(1)">1. Setup</div>
+    <div class="step" id="st2" onclick="goToStep(2)">2. Duplicates</div>
+    <div class="step" id="st3" onclick="goToStep(3)">3. AI Filter</div>
+    <div class="step" id="st4" onclick="goToStep(4)">4. Export</div>
   </div>
   <div id="alert" style="display:none" class="alert"></div>
 
@@ -951,6 +952,8 @@ let currentFolderPath = '';
 let albums = [];
 let photoLabels = {};
 let currentEvents = [];
+let currentStep = 1;
+let maxUnlockedStep = 1;
 
 function showAlert(msg, type='info'){
   const el = document.getElementById('alert');
@@ -967,11 +970,26 @@ function syncProjectFileLabel(value){
 }
 
 function setStep(n){
+  currentStep = n;
+  if(n > maxUnlockedStep) maxUnlockedStep = n;
   [1,2,3,4].forEach(i=>{
-    document.getElementById('st'+i).className='step'+(i<n?' ok':i===n?' on':'');
+    const unlocked = i <= maxUnlockedStep;
+    document.getElementById('st'+i).className='step'+(unlocked?' nav':'')+(i<n?' ok':i===n?' on':'');
     document.getElementById('s'+i).className='section'+(i===n?' on':'');
     document.getElementById('s'+i).style.display=i===n?'block':'none';
   });
+}
+
+function goToStep(n){
+  if(n === 1){
+    setStep(1);
+    return;
+  }
+  if(n > maxUnlockedStep) return;
+  if(n === 2 && !dupGroups.length) return;
+  if(n === 3 && !allPhotos.length && !Object.keys(photoLabels).length) return;
+  if(n === 4 && !currentEvents.length) return;
+  setStep(n);
 }
 
 // ── Folder browser ───────────────────────────────────────────────────────────
