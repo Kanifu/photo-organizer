@@ -60,7 +60,7 @@ def normalize_input_dirs(input_dirs: Union[InputSource, Iterable[InputSource]]) 
     if isinstance(input_dirs, (str, Path)):
         raw_dirs = [input_dirs]
     else:
-        raw_dirs = list(input_dirs)
+        raw_dirs = [item for item in input_dirs if item]
 
     normalized: List[Path] = []
     seen = set()

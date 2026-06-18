@@ -64,3 +64,12 @@ def test_normalize_input_dirs_deduplicates_paths(tmp_path):
 
     assert normalize_input_dirs([source, source]) == [source.resolve()]
 
+
+def test_normalize_input_dirs_ignores_empty_values_and_requires_one_input(tmp_path):
+    source = tmp_path / "photos"
+    source.mkdir()
+
+    assert normalize_input_dirs([None, "", source]) == [source.resolve()]
+
+    with pytest.raises(ValueError, match="At least one input folder is required."):
+        normalize_input_dirs([None, ""])

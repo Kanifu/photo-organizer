@@ -40,6 +40,8 @@ def test_index_contains_project_and_batch_assignment_ui():
     assert 'id="albums"' in html
     assert 'id="album-batch-actions"' in html
     assert "assignEventToAlbum" in html
+    assert "assignPhotoToAlbum" in html
+    assert "assignPhotoToAllAlbums" in html
     assert 'onclick="goToStep(1)"' in html
     assert "function goToStep(n)" in html
 

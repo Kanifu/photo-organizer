@@ -768,6 +768,7 @@ section.on{display:block}
 .chip-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .chip{padding:4px 8px;border-radius:999px;border:1px solid #d6dbe7;background:#fff;color:#516074;font-size:.72rem;cursor:pointer}
 .chip.on{background:#1f7a5a;color:#fff;border-color:#1f7a5a}
+.chip.alt{background:#f5f7fb}
 .muted{font-size:.8rem;color:#8a8f99}
 .ai-badge{position:absolute;top:7px;right:7px;border-radius:20px;padding:2px 8px;font-size:.75rem;font-weight:700;color:#fff}
 .ai-h{background:#2ecc71}
@@ -1230,13 +1231,14 @@ function renderAIGrid(){
     const cls=s==null?'':s>=7?'ai-h':s>=4?'ai-m':'ai-l';
     const badge=s!=null?`<div class="ai-badge ${cls}">${s}/10</div>`:'';
     const reason=p.ai_reason?`<div style="font-size:.72rem;color:#999;margin-top:2px">${p.ai_reason}</div>`:'';
-    const chips = albums.map(album=>`<button class="chip ${labels.albums.includes(album.id)?'on':''}" type="button" onclick="toggleAlbum('${p.id}','${album.id}')">${escapeHtml(album.name)}</button>`).join('');
+    const chips = albums.map(album=>`<button class="chip ${isExclusiveAlbumSelection(labels, album.id)?'on':'alt'}" type="button" onclick="assignPhotoToAlbum('${p.id}','${album.id}')">${escapeHtml(album.name)}</button>`).join('');
+    const sharedChip = albums.length > 1 ? `<button class="chip ${isAllAlbumsSelection(labels)?'on':'alt'}" type="button" onclick="assignPhotoToAllAlbums('${p.id}')">Beiden</button>` : '';
     grid.innerHTML+=`
       <div class="pc ${ex?'ex':''}" id="pc-${p.id}">
         <img src="data:image/jpeg;base64,${p.thumb}" alt="${p.name}">
         ${badge}
         <button class="xbtn" onclick="toggleEx('${p.id}')" title="${ex?'Include':'Exclude'}">${ex?'↩':'✕'}</button>
-        <div class="pmeta"><strong>${p.name}</strong><div>${p.date}</div>${reason}<div class="chip-row">${chips}</div></div>
+        <div class="pmeta"><strong>${p.name}</strong><div>${p.date}</div>${reason}<div class="chip-row">${chips}${sharedChip}</div></div>
       </div>`;
   });
 }
@@ -1259,12 +1261,29 @@ function toggleEx(id){
   persistPhotoLabels();
 }
 
-function toggleAlbum(photoId, albumId){
+function isExclusiveAlbumSelection(labels, albumId){
+  const selected = labels.albums || [];
+  return selected.length === 1 && selected[0] === albumId;
+}
+
+function isAllAlbumsSelection(labels){
+  const selected = new Set(labels.albums || []);
+  return albums.length > 1 && albums.every(album => selected.has(album.id));
+}
+
+function assignPhotoToAlbum(photoId, albumId){
   if(!photoLabels[photoId]) photoLabels[photoId] = {excluded:false, albums: albums.map(a=>a.id)};
-  const current = new Set(photoLabels[photoId].albums || []);
-  if(current.has(albumId)) current.delete(albumId);
-  else current.add(albumId);
-  photoLabels[photoId].albums = [...current];
+  photoLabels[photoId].albums = [albumId];
+  photoLabels[photoId].excluded = false;
+  renderAIGrid();
+  persistPhotoLabels();
+}
+
+function assignPhotoToAllAlbums(photoId){
+  const allAlbumIds = albums.map(album=>album.id);
+  if(!photoLabels[photoId]) photoLabels[photoId] = {excluded:false, albums: allAlbumIds};
+  photoLabels[photoId].albums = [...allAlbumIds];
+  photoLabels[photoId].excluded = false;
   renderAIGrid();
   persistPhotoLabels();
 }
