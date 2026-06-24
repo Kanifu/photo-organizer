@@ -6,16 +6,23 @@ Create a reliable local tool that turns scattered personal photos from local fol
 
 ## Phase 1 - Stabilize The Local App
 
-- Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior.
+- Add automated tests for date parsing, event clustering, duplicate grouping, and export behavior. Started with core scan/date/cluster tests and web scan API tests.
 - Make duplicate detection safer by separating "exact duplicate", "likely duplicate", and "similar moment".
-- Add a persistent project/session file so users can pause and continue a selection.
-- Improve folder validation, error messages, and empty-state handling.
+- Add a persistent project/session file so users can pause and continue a selection. Implemented with `photo-organizer-project.json` in the output folder.
+- Improve folder validation, error messages, and empty-state handling. Started with output-folder validation and an in-app folder browser.
 - Replace the single embedded HTML string with proper templates or a small frontend structure.
 - Add clear install and run documentation.
 
+## Phase 1b - AI Provider Options
+
+- Keep Anthropic/Claude as the first supported provider.
+- Add an AI provider abstraction before adding OpenAI, Google, or local vision models.
+- Store provider name, model name, and scoring prompt in project/session settings.
+- Keep AI scoring optional and make cost/rate-limit behavior visible before running a batch.
+
 ## Phase 2 - Multiple Local Sources
 
-- Allow users to add multiple local folders in one project.
+- Allow users to add multiple local folders in one project. Implemented for the current web UI, API, CLI, and core scan pipeline.
 - Track source folder per photo.
 - Detect duplicate files across folders.
 - Add include/exclude rules per source.
@@ -32,6 +39,7 @@ Create a reliable local tool that turns scattered personal photos from local fol
 ## Phase 4 - Album Curation
 
 - Add target album settings: theme, date range, max pages, max photos, preferred density.
+- Support multiple album targets inside one project. Implemented as a first pass with per-photo album assignment and per-album export folders.
 - Rank photos by quality, uniqueness, faces/people, events, and user selections.
 - Create a balanced shortlist across events instead of only selecting the highest-scored photos.
 - Add manual review views for "must keep", "maybe", and "discard".
@@ -52,4 +60,3 @@ Create a reliable local tool that turns scattered personal photos from local fol
 - Keep cloud access optional and transparent.
 - Keep AI suggestions explainable and overridable.
 - Make the pipeline resumable before adding more automation.
-

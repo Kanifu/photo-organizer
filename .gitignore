@@ -1,4 +1,5 @@
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 
@@ -18,4 +19,4 @@ tmp/
 temp/
 
 *.log
-
+photo-organizer-project.json

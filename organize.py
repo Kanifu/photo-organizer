@@ -13,7 +13,7 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import imagehash
 from PIL import Image
@@ -48,6 +48,66 @@ FILENAME_DATE_PATTERNS = [
 
 def is_screenshot(path: Path) -> bool:
     return any(p.match(path.name) for p in SKIP_PATTERNS)
+
+
+# ── Source scanning ───────────────────────────────────────────────────────────
+
+InputSource = Union[str, Path]
+
+
+def normalize_input_dirs(input_dirs: Union[InputSource, Iterable[InputSource]]) -> List[Path]:
+    """Return unique, resolved input folders while preserving user order."""
+    if isinstance(input_dirs, (str, Path)):
+        raw_dirs = [input_dirs]
+    else:
+        raw_dirs = [item for item in input_dirs if item]
+
+    normalized: List[Path] = []
+    seen = set()
+    for raw_dir in raw_dirs:
+        path = Path(raw_dir).expanduser().resolve()
+        if path in seen:
+            continue
+        normalized.append(path)
+        seen.add(path)
+
+    if not normalized:
+        raise ValueError("At least one input folder is required.")
+    return normalized
+
+
+def validate_source_dirs(input_dirs: List[Path], output_dir: Optional[Path] = None) -> None:
+    for input_dir in input_dirs:
+        if not input_dir.exists():
+            raise ValueError(f"Input folder not found: {input_dir}")
+        if not input_dir.is_dir():
+            raise ValueError(f"Input path is not a folder: {input_dir}")
+        if output_dir and (output_dir == input_dir or output_dir.is_relative_to(input_dir)):
+            raise ValueError(
+                "Output folder must be outside every input folder to avoid rescanning exports."
+            )
+
+
+def scan_photos(input_dirs: List[Path], skip_screenshots: bool = True) -> Tuple[List[Path], int]:
+    """Collect supported photos from one or more source folders."""
+    photos: List[Path] = []
+    skipped = 0
+    seen = set()
+
+    for input_dir in input_dirs:
+        for path in input_dir.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            if skip_screenshots and is_screenshot(path):
+                skipped += 1
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            photos.append(resolved)
+            seen.add(resolved)
+
+    return photos, skipped
 
 
 # ── EXIF: date ────────────────────────────────────────────────────────────────
@@ -318,7 +378,7 @@ def cluster_into_events(
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run(
-    input_dir: Path,
+    input_dir: Union[InputSource, Iterable[InputSource]],
     output_dir: Path,
     gap_hours: float = DEFAULT_EVENT_GAP_HOURS,
     dry_run: bool = False,
@@ -326,24 +386,23 @@ def run(
     use_locations: bool = True,
     interactive: bool = False,
 ):
+    input_dirs = normalize_input_dirs(input_dir)
+    output_dir = Path(output_dir).expanduser().resolve()
+    validate_source_dirs(input_dirs, output_dir)
+
     print(f"\nPhoto Organizer v2")
-    print(f"  Input:  {input_dir}")
+    print("  Inputs:")
+    for source_dir in input_dirs:
+        print(f"    - {source_dir}")
     print(f"  Output: {output_dir}")
     print(f"  Event gap: {gap_hours}h | Screenshots: {'skip' if skip_screenshots else 'include'} | "
           f"Locations: {'yes' if use_locations else 'no'} | Dry run: {dry_run}\n")
 
     # 1. Scan
     print("Step 1/5: Scanning photos...")
-    all_photos = [
-        p for p in input_dir.rglob("*")
-        if p.suffix.lower() in SUPPORTED_EXTENSIONS and p.is_file()
-    ]
-
-    if skip_screenshots:
-        skipped = [p for p in all_photos if is_screenshot(p)]
-        all_photos = [p for p in all_photos if not is_screenshot(p)]
-        if skipped:
-            print(f"  Skipped {len(skipped)} screenshots")
+    all_photos, skipped = scan_photos(input_dirs, skip_screenshots=skip_screenshots)
+    if skipped:
+        print(f"  Skipped {skipped} screenshots")
 
     print(f"  Found {len(all_photos)} photos")
     if not all_photos:
